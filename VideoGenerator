@@ -1,0 +1,153 @@
+import tkinter as tk
+from tkinter import filedialog, messagebox
+from PIL import Image, ImageTk
+from moviepy.editor import ImageSequenceClip, AudioFileClip, concatenate_videoclips
+import numpy as np
+import tempfile
+import torch
+from diffusers import StableDiffusionPipeline
+from google.cloud import texttospeech
+
+# Initialize Stable Diffusion model
+device = "cuda" if torch.cuda.is_available() else "cpu"
+model = StableDiffusionPipeline.from_pretrained("CompVis/stable-diffusion-v1-4").to(device)
+
+# Function to generate image using Stable Diffusion
+def generate_image(prompt, filename):
+    image = model(prompt).images[0]
+    image.save(filename)
+    return filename
+
+# Function to animate images (simple zoom-in effect as an example)
+def animate_image(img_path, output_path):
+    img = Image.open(img_path)
+    frames = []
+    for i in range(20):
+        scale = 1 + 0.02 * i
+        new_size = (int(img.width * scale), int(img.height * scale))
+        frame = img.resize(new_size, Image.LANCZOS)
+        left = (frame.width - img.width) / 2
+        top = (frame.height - img.height) / 2
+        frame = frame.crop((left, top, left + img.width, top + img.height))
+        frames.append(np.array(frame))
+    clip = ImageSequenceClip(frames, fps=10)
+    clip.write_videofile(output_path, fps=10)
+
+# Function to convert text to speech using Google Cloud Text-to-Speech
+def text_to_speech(text, filename="narration.mp3"):
+    client = texttospeech.TextToSpeechClient()
+
+    input_text = texttospeech.SynthesisInput(text=text)
+
+    voice = texttospeech.VoiceSelectionParams(
+        language_code="en-US",
+        ssml_gender=texttospeech.SsmlVoiceGender.FEMALE,
+        name="en-US-Wavenet-D"
+    )
+
+    audio_config = texttospeech.AudioConfig(
+        audio_encoding=texttospeech.AudioEncoding.MP3
+    )
+
+    response = client.synthesize_speech(
+        input=input_text, voice=voice, audio_config=audio_config
+    )
+
+    with open(filename, "wb") as out:
+        out.write(response.audio_content)
+
+# Function to generate video
+def generate_video(text, output_file="animated_video.mp4"):
+    # Generate images from text prompts
+    prompts = [
+        "A mystical forest with glowing plants and magical creatures",
+        "A brave adventurer entering a magical realm",
+        "A sparkling river with enchanted reflections",
+        "An ancient, towering tree with glowing runes"
+    ]
+    
+    image_paths = []
+    for i, prompt in enumerate(prompts):
+        img_path = tempfile.mktemp(suffix=".png")
+        generate_image(prompt, img_path)
+        image_paths.append(img_path)
+    
+    # Animate images
+    video_paths = []
+    for img_path in image_paths:
+        video_path = tempfile.mktemp(suffix=".mp4")
+        animate_image(img_path, video_path)
+        video_paths.append(video_path)
+    
+    # Combine animated videos into one
+    clips = [ImageSequenceClip([video_path], fps=10) for video_path in video_paths]
+    final_clip = concatenate_videoclips(clips, method="compose")
+    
+    # Ensure video is longer than 10 minutes
+    while final_clip.duration < 600:
+        final_clip = concatenate_videoclips([final_clip, final_clip])
+    
+    # Generate audio narration
+    text_to_speech(text)
+    audio = AudioFileClip("narration.mp3")
+    
+    # Combine video and audio
+    final_video = final_clip.set_audio(audio)
+    final_video.write_videofile(output_file, fps=10)
+    
+    return output_file
+
+# Function to play video in the canvas
+def play_video(file_path):
+    try:
+        import vlc
+        player = vlc.MediaPlayer(file_path)
+        player.play()
+    except ImportError:
+        messagebox.showwarning("VLC Player Required", "VLC media player is required for video playback.")
+
+# Function to handle button click
+def on_generate_click():
+    text = text_entry.get("1.0", tk.END).strip()
+    if not text:
+        messagebox.showwarning("Input Error", "Please enter some text.")
+        return
+
+    output_file = tempfile.mktemp(suffix=".mp4")
+
+    try:
+        result_file = generate_video(text, output_file)
+        if result_file:
+            play_video(result_file)
+            response = messagebox.askyesno("Save Video", "Do you want to save the video?")
+            if response:
+                save_path = filedialog.asksaveasfilename(defaultextension=".mp4", filetypes=[("MP4 files", "*.mp4")])
+                if save_path:
+                    os.rename(result_file, save_path)
+            else:
+                os.remove(result_file)
+    except Exception as e:
+        messagebox.showerror("Error", f"An error occurred: {e}")
+
+# Create the main application window
+root = tk.Tk()
+root.title("Text to Animated Video Generator")
+
+# Create a text entry widget
+text_entry = tk.Text(root, wrap="word", width=60, height=20)
+text_entry.pack(padx=10, pady=10)
+
+# Create a generate button
+generate_button = tk.Button(root, text="Generate Video", command=on_generate_click)
+generate_button.pack(pady=10)
+
+# Create a canvas to show the video preview
+video_canvas = tk.Canvas(root, width=640, height=480)
+video_canvas.pack(padx=10, pady=10)
+
+# Run the application
+root.mainloop()
+
+# Clean up temporary files (optional)
+if os.path.exists("narration.mp3"):
+    os.remove("narration.mp3")

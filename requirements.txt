@@ -1,0 +1,8 @@
+tk
+Pillow
+moviepy
+numpy
+torch
+diffusers
+google-cloud-texttospeech
+spacy
